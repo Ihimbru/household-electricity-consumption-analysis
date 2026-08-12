@@ -17,6 +17,19 @@ The analysis addressed four main research questions:
 * Does household income independently affect electricity consumption after accounting for structural and occupancy characteristics?
 * Does the relationship between household occupancy and electricity consumption depend on EPC performance?
 
+## Project Files
+
+* [View the full R analysis](analysis/electricity_analysis.Rmd)
+* [View the full statistical report](report/household_electricity_consumption.pdf)
+
+## Key Visualisation
+
+The figure below shows how the relationship between household occupancy and predicted electricity consumption differs between high- and low-EPC homes.
+
+![Interaction between EPC group and household occupancy](figures/interaction_plot.png)
+
+The interaction indicates that electricity consumption increases with household occupancy in both EPC groups, but the increase is steeper among low-EPC homes.
+
 ## Methods
 
 The statistical workflow included:
@@ -66,7 +79,11 @@ Model assumptions were assessed using:
 * Generalised Variance Inflation Factors (GVIF)
 * Leverage diagnostics
 
-The diagnostic assessment indicated that the assumptions required for ordinary least squares regression were sufficiently satisfied after data validation.
+The diagnostic assessment showed some mild curvature and variation in residual spread, together with some upper-tail deviation from normality. However, no severe departure from the assumptions required for the analysis was observed.
+
+The diagnostic plots are available here:
+
+![Preferred model diagnostic plots](figures/diagnostics_preferred.png)
 
 ## Tools and Techniques
 
@@ -87,26 +104,28 @@ household-electricity-consumption-analysis/
 ├── README.md
 ├── analysis/
 │   └── electricity_analysis.Rmd
+├── data/
+│   └── README.md
 ├── figures/
 │   ├── diagnostics_preferred.png
 │   └── interaction_plot.png
-├── report/
-│   └── household_electricity_consumption.pdf
-└── data/
-    └── README.md
+└── report/
+    └── household_electricity_consumption.pdf
 ```
 
 ## Academic Context
 
 This project was developed in the context of the **Project Learning from Data** course at Hasselt University.
 
-The statistical workflow presented in this repository includes data cleaning, model implementation, diagnostics, statistical interpretation, visualisation and report preparation.
+The statistical workflow presented in this repository, including data cleaning, model implementation, diagnostics, statistical interpretation, visualisation and report preparation, was carried out by me.
 
 This repository has been organised as a portfolio version of the project to demonstrate the complete statistical analysis workflow and ensure that the analysis is clearly documented and reproducible.
 
 ## Data Availability
 
 The original dataset is not included in this public repository because it was provided for academic purposes.
+
+A description of the expected data structure and variables used in the analysis is provided in the [`data/README.md`](data/README.md) file.
 
 The repository therefore focuses on the statistical methodology, analysis workflow, results, visualisations and final report.
 
