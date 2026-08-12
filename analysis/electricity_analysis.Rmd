@@ -1,0 +1,1011 @@
+---
+title: "Determinants of Household Electricity Consumption"
+subtitle: "Statistical Analysis in R"
+author: "Yiwu Ongum Ihimbru"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+# Create figures directory if it does not already exist
+dir.create("../figures", showWarnings = FALSE)
+```
+
+## Project Context
+
+This analysis was developed in the context of the **Project Learning from Data** course at Hasselt University.
+
+The workflow includes data validation, multiple linear regression, model selection, diagnostic assessment, standardised coefficient comparison, and interaction modelling.
+
+> **Data availability:** The original academic dataset is not publicly distributed with this repository. To reproduce the analysis locally, place the dataset in the `data/` folder as `data_students.txt`.
+
+---
+
+## 1. Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(car)
+library(MASS)
+library(knitr)
+```
+
+---
+
+## 2. Load Data and Apply Group-Specific Row Removal
+
+```{r load-data}
+
+# Relative path used so that the analysis is portable across computers
+data_raw <- read.csv(
+  "../data/data_students.txt",
+  sep = ";",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+
+cat(
+  "Raw dimensions:",
+  nrow(data_raw), "rows x",
+  ncol(data_raw), "columns\n"
+)
+
+# Group-specific row removal rules (g = 7):
+# Row 49  = g^2       = 7^2       = 49
+# Row 77  = g * 11    = 7 * 11    = 77
+# Row 154 = 19g + 21  = 19(7) + 21 = 154
+
+rows_to_remove <- c(49, 77, 154)
+
+data <- data_raw[-rows_to_remove, ]
+
+cat(
+  "Rows after group-specific removal:",
+  nrow(data), "\n"
+)
+```
+
+---
+
+## 3. Variable Coding
+
+```{r variable-coding}
+
+# EPC label: reference category = A (most efficient)
+data$epc_label <- factor(
+  data$epc_label,
+  levels = c("A", "B", "C", "D", "E", "F")
+)
+
+# Building era: reference category = Post-2000
+data$building_era <- factor(
+  data$building_era,
+  levels = c("Post-2000", "1970-2000", "Pre-1970")
+)
+
+# Roof colour: reference category = Black
+data$roof_color <- factor(
+  data$roof_color,
+  levels = c("Black", "Red", "Other")
+)
+
+# Pet ownership: binary factor
+data$pet_ownership <- factor(data$pet_ownership)
+
+str(data)
+```
+
+---
+
+## 4. Missing Data
+
+```{r missing-data}
+
+# Count and percentage of missing observations per variable
+miss_count <- colSums(is.na(data))
+miss_pct <- round(colMeans(is.na(data)) * 100, 2)
+
+miss_summary <- data.frame(
+  Variable = names(miss_count),
+  N_missing = miss_count,
+  Pct_missing = miss_pct
+)
+
+# Display variables containing missing observations
+miss_summary[miss_summary$N_missing > 0, ]
+
+# Missingness was below the prespecified 10% threshold.
+# Complete-case analysis was therefore applied.
+data_cc <- data[complete.cases(data), ]
+
+cat(
+  "Complete cases:",
+  nrow(data_cc),
+  "out of",
+  nrow(data),
+  "\n"
+)
+```
+
+---
+
+## 5. Data Validation
+
+```{r data-validation}
+
+# Inspect annual electricity consumption before modelling
+summary(data_cc$annual_kwh)
+
+# Five observations contained implausibly large electricity-use values,
+# ranging from approximately 2.9 to 5.4 million kWh.
+#
+# The highest legitimate value was 16,395 kWh, producing a very large
+# natural gap in the outcome distribution.
+#
+# A conservative threshold of 100,000 kWh therefore identifies the
+# same five apparent data-entry errors.
+
+implausible <- data_cc[
+  data_cc$annual_kwh > 100000,
+]
+
+cat(
+  "Implausible observations identified:",
+  nrow(implausible),
+  "\n"
+)
+
+print(
+  implausible[
+    ,
+    c(
+      "annual_kwh",
+      "epc_label",
+      "sq_meters",
+      "occupancy_count"
+    )
+  ]
+)
+
+# Remove apparent recording errors before model fitting
+data_clean <- data_cc[
+  data_cc$annual_kwh <= 100000,
+]
+
+cat(
+  "Final analytic sample:",
+  nrow(data_clean),
+  "observations\n"
+)
+
+cat(
+  "Maximum annual_kwh after validation:",
+  max(data_clean$annual_kwh),
+  "\n"
+)
+```
+
+---
+
+## 6. Descriptive Statistics
+
+### Continuous Variables
+
+```{r descriptives-continuous}
+
+cont_vars <- c(
+  "annual_kwh",
+  "sq_meters",
+  "income_euro",
+  "occupancy_count",
+  "dist_to_brussels"
+)
+
+summary(data_clean[, cont_vars])
+```
+
+### Categorical Variables
+
+```{r descriptives-categorical}
+
+for (
+  var in c(
+    "epc_label",
+    "building_era",
+    "roof_color",
+    "pet_ownership"
+  )
+) {
+
+  cat("\n---", var, "---\n")
+
+  tbl <- table(data_clean[[var]])
+
+  print(
+    cbind(
+      N = tbl,
+      Pct = round(
+        100 * prop.table(tbl),
+        1
+      )
+    )
+  )
+}
+```
+
+---
+
+## 7. Full Multiple Linear Regression Model
+
+```{r full-model-clean}
+
+model_full_clean <- lm(
+  annual_kwh ~
+    sq_meters +
+    epc_label +
+    building_era +
+    income_euro +
+    occupancy_count +
+    dist_to_brussels +
+    roof_color +
+    pet_ownership,
+  data = data_clean
+)
+
+summary(model_full_clean)
+```
+
+---
+
+## 8. Diagnostics for the Full Model
+
+```{r diagnostics-clean, fig.width=8, fig.height=6}
+
+par(mfrow = c(2, 2))
+
+plot(
+  model_full_clean,
+  pch = 16,
+  cex = 0.5
+)
+
+par(mfrow = c(1, 1))
+```
+
+### Residual Distribution
+
+```{r histogram-clean}
+
+hist(
+  residuals(model_full_clean),
+  main = "Histogram of residuals - clean full model",
+  xlab = "Residuals"
+)
+```
+
+### Q-Q Plot
+
+```{r qqplot-clean}
+
+qqnorm(
+  residuals(model_full_clean),
+  main = "Q-Q plot - clean full model"
+)
+
+qqline(
+  residuals(model_full_clean)
+)
+```
+
+### Transformation Decision
+
+```{r assumption-decision}
+
+cat("Outcome: annual_kwh on original scale\n")
+cat("Transformation: none\n")
+cat(
+  "Decision: OLS assumptions were sufficiently satisfied after data validation.\n"
+)
+```
+
+---
+
+## 9. Model Selection: Research Question 1
+
+Bidirectional stepwise AIC was applied starting from the full model.
+
+```{r stepwise-aic}
+
+model_selected <- MASS::stepAIC(
+  model_full_clean,
+  direction = "both",
+  trace = TRUE
+)
+```
+
+### Preferred Model
+
+```{r selected-summary}
+
+summary(model_selected)
+
+cat(
+  "\nAIC of preferred model:",
+  round(AIC(model_selected), 2),
+  "\n"
+)
+
+confint(model_selected)
+```
+
+---
+
+## 10. Incremental Model Comparison
+
+```{r block-models}
+
+# Block 1: Structural predictors
+model_b1 <- lm(
+  annual_kwh ~
+    sq_meters +
+    epc_label +
+    building_era,
+  data = data_clean
+)
+
+# Block 2: Add socioeconomic predictors
+model_b2 <- lm(
+  annual_kwh ~
+    sq_meters +
+    epc_label +
+    building_era +
+    income_euro +
+    occupancy_count,
+  data = data_clean
+)
+
+# Block 3: Add geographic predictor
+model_b3 <- lm(
+  annual_kwh ~
+    sq_meters +
+    epc_label +
+    building_era +
+    income_euro +
+    occupancy_count +
+    dist_to_brussels,
+  data = data_clean
+)
+
+# Block 4: Add screening predictors
+model_b4 <- lm(
+  annual_kwh ~
+    sq_meters +
+    epc_label +
+    building_era +
+    income_euro +
+    occupancy_count +
+    dist_to_brussels +
+    roof_color +
+    pet_ownership,
+  data = data_clean
+)
+
+model_comparison <- data.frame(
+
+  Model = c(
+    "Block 1 - Structural",
+    "Block 2 - Socioeconomic",
+    "Block 3 - Geographic",
+    "Block 4 - Screening",
+    "Preferred - Stepwise AIC"
+  ),
+
+  Adj_R2 = round(
+    c(
+      summary(model_b1)$adj.r.squared,
+      summary(model_b2)$adj.r.squared,
+      summary(model_b3)$adj.r.squared,
+      summary(model_b4)$adj.r.squared,
+      summary(model_selected)$adj.r.squared
+    ),
+    3
+  ),
+
+  AIC = round(
+    c(
+      AIC(model_b1),
+      AIC(model_b2),
+      AIC(model_b3),
+      AIC(model_b4),
+      AIC(model_selected)
+    ),
+    1
+  )
+)
+
+kable(
+  model_comparison,
+  caption = "Model comparison across predictor blocks"
+)
+```
+
+---
+
+## 11. Preferred Model Diagnostics
+
+```{r diagnostics-selected, fig.width=8, fig.height=6}
+
+par(mfrow = c(2, 2))
+
+plot(
+  model_selected,
+  pch = 16,
+  cex = 0.5
+)
+
+par(mfrow = c(1, 1))
+```
+
+### Multicollinearity
+
+```{r vif-selected}
+
+# Generalised Variance Inflation Factor
+# Threshold:
+# GVIF^(1/(2*df)) < sqrt(5) ≈ 2.24
+
+vif_vals <- car::vif(model_selected)
+
+print(
+  round(vif_vals, 3)
+)
+
+vif_check <- if (
+  is.matrix(vif_vals)
+) {
+  vif_vals[, 3]
+} else {
+  vif_vals
+}
+
+cat(
+  "\nAll adjusted GVIF values below 2.24:",
+  all(vif_check < sqrt(5)),
+  "\n"
+)
+```
+
+### Leverage
+
+```{r leverage-selected}
+
+# Threshold:
+# h_ii > 2(p+1)/n
+
+p <- length(coef(model_selected)) - 1
+
+leverage_threshold <-
+  2 * (p + 1) / nrow(data_clean)
+
+hat_values <-
+  hatvalues(model_selected)
+
+n_leverage <-
+  sum(hat_values > leverage_threshold)
+
+cat(
+  "Leverage threshold:",
+  round(leverage_threshold, 4),
+  "\n"
+)
+
+cat(
+  "High-leverage observations:",
+  n_leverage,
+  "\n"
+)
+
+cat(
+  "Percentage of sample:",
+  round(
+    100 * n_leverage / nrow(data_clean),
+    1
+  ),
+  "%\n"
+)
+```
+
+---
+
+## 12. Save Preferred Model Diagnostics
+
+```{r save-diag-preferred}
+
+png(
+  "../figures/diagnostics_preferred.png",
+  width = 800,
+  height = 600
+)
+
+par(mfrow = c(2, 2))
+
+plot(
+  model_selected,
+  pch = 16,
+  cex = 0.5
+)
+
+par(mfrow = c(1, 1))
+
+dev.off()
+
+cat(
+  "Saved: figures/diagnostics_preferred.png\n"
+)
+```
+
+---
+
+## 13. Research Question 2: EPC Label Effects
+
+```{r rq2-epc}
+
+# EPC coefficients relative to reference category A
+
+epc_rows <- grep(
+  "epc_label",
+  names(coef(model_selected))
+)
+
+epc_coefs <- data.frame(
+
+  Label = gsub(
+    "epc_label",
+    "Label ",
+    names(coef(model_selected))[epc_rows]
+  ),
+
+  Estimate = round(
+    coef(model_selected)[epc_rows],
+    1
+  ),
+
+  CI_lower = round(
+    confint(model_selected)[epc_rows, 1],
+    1
+  ),
+
+  CI_upper = round(
+    confint(model_selected)[epc_rows, 2],
+    1
+  ),
+
+  p_value = round(
+    summary(model_selected)$coefficients[
+      epc_rows,
+      4
+    ],
+    4
+  )
+)
+
+rownames(epc_coefs) <- NULL
+
+kable(
+  epc_coefs,
+  caption =
+    "EPC label coefficients relative to label A (kWh)"
+)
+```
+
+---
+
+## 14. Research Question 3: Household Income
+
+```{r rq3-income}
+
+income_coef <-
+  summary(model_selected)$coefficients[
+    "income_euro",
+  ]
+
+cat(
+  "Income coefficient:",
+  round(income_coef["Estimate"], 6),
+  "\n"
+)
+
+cat(
+  "p-value:",
+  round(income_coef["Pr(>|t|)"], 3),
+  "\n"
+)
+
+cat(
+  "95% CI: [",
+  round(
+    confint(model_selected)[
+      "income_euro",
+      1
+    ],
+    6
+  ),
+  ",",
+  round(
+    confint(model_selected)[
+      "income_euro",
+      2
+    ],
+    6
+  ),
+  "]\n"
+)
+```
+
+### Standardised Coefficients
+
+```{r rq3-standardised}
+
+sds <- sapply(
+  data_clean[
+    ,
+    c(
+      "annual_kwh",
+      "sq_meters",
+      "income_euro",
+      "occupancy_count",
+      "dist_to_brussels"
+    )
+  ],
+  sd,
+  na.rm = TRUE
+)
+
+coefs <- coef(model_selected)
+
+std_coefs <- c(
+
+  sq_meters =
+    unname(coefs["sq_meters"]) *
+    sds["sq_meters"] /
+    sds["annual_kwh"],
+
+  income_euro =
+    unname(coefs["income_euro"]) *
+    sds["income_euro"] /
+    sds["annual_kwh"],
+
+  occupancy_count =
+    unname(coefs["occupancy_count"]) *
+    sds["occupancy_count"] /
+    sds["annual_kwh"],
+
+  dist_to_brussels =
+    unname(coefs["dist_to_brussels"]) *
+    sds["dist_to_brussels"] /
+    sds["annual_kwh"]
+)
+
+cat(
+  "\nStandardised coefficients for continuous predictors:\n"
+)
+
+print(
+  round(
+    sort(
+      abs(std_coefs),
+      decreasing = TRUE
+    ),
+    3
+  )
+)
+```
+
+### Correlation Analysis
+
+```{r rq3-correlation}
+
+cor_income_kwh <- cor(
+  data_clean$income_euro,
+  data_clean$annual_kwh,
+  use = "complete.obs"
+)
+
+cor_income_sqm <- cor(
+  data_clean$income_euro,
+  data_clean$sq_meters,
+  use = "complete.obs"
+)
+
+cat(
+  "Correlation: income vs annual_kwh:",
+  round(cor_income_kwh, 3),
+  "\n"
+)
+
+cat(
+  "Correlation: income vs sq_meters:",
+  round(cor_income_sqm, 3),
+  "\n"
+)
+```
+
+---
+
+## 15. Research Question 4: EPC × Occupancy Interaction
+
+### Create EPC Group
+
+```{r rq4-setup}
+
+# High EPC = A or B
+# Low EPC = C to F
+
+data_clean$high_epc <- ifelse(
+  data_clean$epc_label %in% c("A", "B"),
+  "High",
+  "Low"
+)
+
+data_clean$high_epc <- factor(
+  data_clean$high_epc,
+  levels = c("Low", "High")
+)
+
+cat("EPC group distribution:\n")
+
+print(
+  table(data_clean$high_epc)
+)
+```
+
+### Additive Model
+
+```{r rq4-additive}
+
+model_additive <- lm(
+  annual_kwh ~
+    sq_meters +
+    high_epc +
+    occupancy_count +
+    income_euro +
+    dist_to_brussels,
+  data = data_clean
+)
+```
+
+### Interaction Model
+
+```{r rq4-interaction}
+
+model_interaction <- lm(
+  annual_kwh ~
+    sq_meters +
+    high_epc * occupancy_count +
+    income_euro +
+    dist_to_brussels,
+  data = data_clean
+)
+
+summary(model_interaction)
+```
+
+### Nested Model F-Test
+
+```{r rq4-ftest}
+
+anova(
+  model_additive,
+  model_interaction
+)
+```
+
+### Interaction Interpretation
+
+```{r rq4-interpretation}
+
+int_coef <- coef(model_interaction)[
+  "high_epcHigh:occupancy_count"
+]
+
+int_ci <- confint(model_interaction)[
+  "high_epcHigh:occupancy_count",
+]
+
+int_p <- summary(model_interaction)$coefficients[
+  "high_epcHigh:occupancy_count",
+  "Pr(>|t|)"
+]
+
+cat(
+  "Interaction coefficient:",
+  round(int_coef, 1),
+  "\n"
+)
+
+cat(
+  "95% CI: [",
+  round(int_ci[1], 1),
+  ",",
+  round(int_ci[2], 1),
+  "]\n"
+)
+
+cat(
+  "p-value:",
+  format.pval(
+    int_p,
+    digits = 3
+  ),
+  "\n"
+)
+
+occ_slope_low <-
+  coef(model_interaction)["occupancy_count"]
+
+occ_slope_high <-
+  occ_slope_low + int_coef
+
+cat(
+  "\nOccupancy slope - Low EPC homes:",
+  round(occ_slope_low, 1),
+  "kWh per resident\n"
+)
+
+cat(
+  "Occupancy slope - High EPC homes:",
+  round(occ_slope_high, 1),
+  "kWh per resident\n"
+)
+
+cat(
+  "Difference in occupancy slopes:",
+  round(abs(int_coef), 1),
+  "kWh per resident\n"
+)
+```
+
+---
+
+## 16. Interaction Plot
+
+```{r interaction-plot, fig.width=7, fig.height=5}
+
+pred_data <- expand.grid(
+
+  occupancy_count = 1:7,
+
+  high_epc = factor(
+    c("Low", "High"),
+    levels = c("Low", "High")
+  ),
+
+  sq_meters =
+    mean(
+      data_clean$sq_meters,
+      na.rm = TRUE
+    ),
+
+  income_euro =
+    mean(
+      data_clean$income_euro,
+      na.rm = TRUE
+    ),
+
+  dist_to_brussels =
+    mean(
+      data_clean$dist_to_brussels,
+      na.rm = TRUE
+    )
+)
+
+ci_pred <- predict(
+  model_interaction,
+  newdata = pred_data,
+  interval = "confidence"
+)
+
+pred_data$fit <-
+  ci_pred[, "fit"]
+
+pred_data$lower <-
+  ci_pred[, "lwr"]
+
+pred_data$upper <-
+  ci_pred[, "upr"]
+
+interaction_plot <- ggplot(
+  pred_data,
+  aes(
+    x = occupancy_count,
+    y = fit,
+    colour = high_epc,
+    fill = high_epc
+  )
+) +
+
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.15,
+    colour = NA
+  ) +
+
+  geom_line(
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    size = 2.5
+  ) +
+
+  scale_x_continuous(
+    breaks = 1:7
+  ) +
+
+  labs(
+    title =
+      "Interaction between EPC group and household occupancy",
+    subtitle =
+      "Other predictors held at sample means; shaded bands represent 95% confidence intervals",
+    x =
+      "Number of occupants",
+    y =
+      "Predicted annual electricity consumption (kWh)",
+    colour =
+      "EPC Group",
+    fill =
+      "EPC Group"
+  ) +
+
+  theme_minimal(
+    base_size = 12
+  ) +
+
+  theme(
+    legend.position = "bottom"
+  )
+
+interaction_plot
+```
+
+### Save Interaction Plot
+
+```{r save-interaction-plot}
+
+ggsave(
+  "../figures/interaction_plot.png",
+  plot = interaction_plot,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
+
+cat(
+  "Saved: figures/interaction_plot.png\n"
+)
+```
+
+---
+
+## 17. Session Information
+
+```{r session-info}
+
+sessionInfo()
+```
+
+---
+
+*Portfolio version | Project Learning from Data | Hasselt University*
